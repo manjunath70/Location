@@ -56,6 +56,9 @@ deleteLevel(SR s) =>
     line.delete(s.ln)
     label.delete(s.lbl)
 
+// format a price for display, or "-" when na
+fmt(float x) => na(x) ? "-" : str.tostring(x, format.mintick)
+
 // index of the closest existing level within gap g, or -1 if none
 nearestWithin(array<SR> arr, float price, float g) =>
     idx  = -1
@@ -239,10 +242,13 @@ if showSig
             stopP   := na
             tgtP    := na
 
-plotshape(showSig and buy,   title="Call",       style=shape.labelup,   location=location.belowbar, color=color.new(color.green, 0), textcolor=color.white, text="CALL",  size=size.small)
-plotshape(showSig and sell,  title="Put",        style=shape.labeldown, location=location.abovebar, color=color.new(color.red, 0),   textcolor=color.white, text="PUT",   size=size.small)
-plotshape(showSig and exitL, title="Close call", style=shape.xcross,    location=location.abovebar, color=color.gray, text="CLOSE", size=size.tiny)
-plotshape(showSig and exitS, title="Close put",  style=shape.xcross,    location=location.belowbar, color=color.gray, text="CLOSE", size=size.tiny)
+// Entry markers carry the suggested strike, target and stop.
+if showSig and buy
+    label.new(bar_index, na, "CALL " + fmt(callStrike) + "\nT " + fmt(tgtP) + "  SL " + fmt(stopP), yloc=yloc.belowbar, style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+if showSig and sell
+    label.new(bar_index, na, "PUT " + fmt(putStrike) + "\nT " + fmt(tgtP) + "  SL " + fmt(stopP), yloc=yloc.abovebar, style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+plotshape(showSig and exitL, title="Close call", style=shape.xcross, location=location.abovebar, color=color.gray, text="CLOSE", size=size.tiny)
+plotshape(showSig and exitS, title="Close put",  style=shape.xcross, location=location.belowbar, color=color.gray, text="CLOSE", size=size.tiny)
 
 alertcondition(buy,   "S/R Call (bullish)", "Auto S/R: buy CALL")
 alertcondition(sell,  "S/R Put (bearish)",  "Auto S/R: buy PUT")
@@ -252,8 +258,6 @@ alertcondition(exitS, "S/R Close put",      "Auto S/R: close PUT")
 // ============================ OPTIONS DASHBOARD ============================
 // Current actionable options plan (drawn top-right on the last bar). Direction,
 // strike, target and stop only — premium/IV/Greeks are not available in Pine.
-fmt(float x) => na(x) ? "-" : str.tostring(x, format.mintick)
-
 var table dash = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 15), border_color=color.new(color.gray, 60), border_width=1)
 
 if showDash and barstate.islast

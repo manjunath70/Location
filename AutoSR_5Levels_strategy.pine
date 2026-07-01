@@ -1,0 +1,212 @@
+//@version=5
+// Auto S/R Strategy (backtestable version of "Auto S/R (5 Levels) v2")
+// -----------------------------------------------------------------------------
+// Same S/R engine as the indicator, wired into the Strategy Tester so you can
+// backtest the Bounce / Breakout rules. Long = the CALL (bullish) signal, Short
+// = the PUT (bearish) signal. NOTE: this backtests the UNDERLYING's price move,
+// which only APPROXIMATES an options trade — it ignores premium, leverage, IV
+// and theta decay. Treat the stats as a directional-edge sanity check, not an
+// options P&L. NOT financial advice.
+// -----------------------------------------------------------------------------
+strategy("Auto S/R Strategy", overlay=true, max_lines_count=500, max_labels_count=500, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.03, pyramiding=0)
+
+// ============================ INPUTS ============================
+grpP = "Pivots"
+leftBars  = input.int(5, "Left Strength",  minval=1, group=grpP)
+rightBars = input.int(5, "Right Strength", minval=1, group=grpP)
+
+grpL = "Levels"
+maxLevels = input.int(5, "Levels shown per side", minval=1, maxval=20, group=grpL)
+
+grpG = "Distinct-level gap"
+gapMode = input.string("ATR", "Gap mode", options=["ATR", "Percent"], group=grpG)
+atrLen  = input.int(14, "ATR length", minval=1, group=grpG)
+atrMult = input.float(0.5, "ATR gap multiple", minval=0.0, step=0.1, group=grpG)
+gapPct  = input.float(0.5, "Percent gap %", minval=0.0, step=0.1, group=grpG)
+
+grpV = "Visuals"
+resCol     = input.color(color.red,   "Resistance color", group=grpV)
+supCol     = input.color(color.green, "Support color",    group=grpV)
+showLabels = input.bool(true, "Show price / touch labels", group=grpV)
+emphasize  = input.bool(true, "Emphasize nearest level",   group=grpV)
+
+grpS = "Strategy"
+sigMode  = input.string("Bounce", "Mode", options=["Bounce", "Breakout"], group=grpS)
+allowLong  = input.bool(true, "Trade longs (CALLs)",  group=grpS)
+allowShort = input.bool(true, "Trade shorts (PUTs)",  group=grpS)
+touchTol = input.float(0.25, "Bounce touch tolerance (ATR mult)", minval=0.0, step=0.05, group=grpS)
+stopMult = input.float(0.10, "Stop buffer (ATR mult)", minval=0.0, step=0.05, group=grpS)
+rrMult   = input.float(2.0,  "Breakout reward:risk",   minval=0.5, step=0.5, group=grpS, tooltip="Breakout has no opposite level as a target, so it uses this multiple of the stop distance.")
+
+// ============================ STATE ============================
+type SR
+    float price
+    int   touches
+    int   startBar
+    line  ln
+    label lbl
+
+var array<SR> pool = array.new<SR>()
+
+atr     = ta.atr(atrLen)
+gap     = math.max(gapMode == "ATR" ? nz(atr) * atrMult : close * gapPct / 100.0, syminfo.mintick)
+poolMax = math.max(maxLevels * 6, 30)
+
+// ============================ HELPERS ============================
+makeLevel(float price, int startBar) =>
+    ln  = line.new(startBar, price, bar_index, price, extend=extend.right, color=supCol, width=1)
+    lbl = label.new(bar_index, price, "", style=label.style_label_left, size=size.small, color=color.new(color.gray, 100))
+    SR.new(price, 1, startBar, ln, lbl)
+
+deleteLevel(SR s) =>
+    line.delete(s.ln)
+    label.delete(s.lbl)
+
+nearestWithin(array<SR> arr, float price, float g) =>
+    idx  = -1
+    best = g
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            d = math.abs(price - array.get(arr, i).price)
+            if d <= best
+                best := d
+                idx  := i
+    idx
+
+removeWeakest(array<SR> arr) =>
+    if array.size(arr) >= 2
+        wi = 0
+        ws = array.get(arr, 0)
+        for i = 1 to array.size(arr) - 1
+            s = array.get(arr, i)
+            if s.touches < ws.touches or (s.touches == ws.touches and s.startBar < ws.startBar)
+                ws := s
+                wi := i
+        deleteLevel(array.get(arr, wi))
+        array.remove(arr, wi)
+    true
+
+addOrTouch(array<SR> arr, float price, int startBar) =>
+    idx = nearestWithin(arr, price, gap)
+    if idx >= 0
+        s = array.get(arr, idx)
+        s.touches := s.touches + 1
+    else
+        array.push(arr, makeLevel(price, startBar))
+        if array.size(arr) > poolMax
+            removeWeakest(arr)
+    true
+
+nearBelow(array<SR> arr, float price) =>
+    float best = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            p = array.get(arr, i).price
+            if p < price and (na(best) or p > best)
+                best := p
+    best
+
+nearAbove(array<SR> arr, float price) =>
+    float best = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            p = array.get(arr, i).price
+            if p > price and (na(best) or p < best)
+                best := p
+    best
+
+// ============================ COLLECT PIVOTS ============================
+ph = ta.pivothigh(high, leftBars, rightBars)
+pl = ta.pivotlow(low,  leftBars, rightBars)
+pivotBar = bar_index - rightBars
+
+if not na(ph)
+    addOrTouch(pool, ph, pivotBar)
+if not na(pl)
+    addOrTouch(pool, pl, pivotBar)
+
+// ============================ DISPLAY (nearest N each side) ============================
+drawLevels(array<SR> arr) =>
+    n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            s = array.get(arr, i)
+            isRes = s.price > close
+            dThis = math.abs(s.price - close)
+            rank  = 0
+            for j = 0 to n - 1
+                if j != i
+                    o = array.get(arr, j)
+                    if (o.price > close) == isRes
+                        dOther = math.abs(o.price - close)
+                        if dOther < dThis or (dOther == dThis and j < i)
+                            rank := rank + 1
+            col = isRes ? resCol : supCol
+            if rank < maxLevels
+                line.set_color(s.ln, col)
+                line.set_width(s.ln, emphasize and rank == 0 ? 2 : 1)
+                label.set_x(s.lbl, bar_index)
+                label.set_y(s.lbl, s.price)
+                label.set_textcolor(s.lbl, col)
+                txt = (isRes ? "R " : "S ") + str.tostring(s.price, format.mintick) + (s.touches > 1 ? "  " + str.tostring(s.touches) + "x" : "")
+                label.set_text(s.lbl, showLabels ? txt : "")
+            else
+                line.set_color(s.ln, color.new(col, 100))
+                label.set_text(s.lbl, "")
+    true
+
+if barstate.islast
+    drawLevels(pool)
+
+// ============================ SIGNALS -> ORDERS ============================
+supBelow = nearBelow(pool, close)
+resAbove = nearAbove(pool, close)
+brk = nz(atr) * stopMult
+tol = nz(atr) * touchTol
+
+longSig  = false
+shortSig = false
+lStopSig = na
+lTgtSig  = na
+sStopSig = na
+sTgtSig  = na
+
+if strategy.position_size == 0
+    if sigMode == "Bounce"
+        if allowLong and not na(supBelow) and low <= supBelow + tol and close >= open
+            longSig  := true
+            lStopSig := supBelow - brk
+            lTgtSig  := resAbove
+        else if allowShort and not na(resAbove) and high >= resAbove - tol and close <= open
+            shortSig := true
+            sStopSig := resAbove + brk
+            sTgtSig  := supBelow
+    else
+        if allowLong and not na(resAbove[1]) and close > resAbove[1] and close[1] <= resAbove[1]
+            longSig  := true
+            lStopSig := resAbove[1] - brk
+            lTgtSig  := close + rrMult * (close - lStopSig)
+        else if allowShort and not na(supBelow[1]) and close < supBelow[1] and close[1] >= supBelow[1]
+            shortSig := true
+            sStopSig := supBelow[1] + brk
+            sTgtSig  := close - rrMult * (sStopSig - close)
+
+// persist the active stop/target so the exit order can be refreshed every bar
+var float lStop = na
+var float lTgt  = na
+var float sStop = na
+var float sTgt  = na
+
+if longSig
+    strategy.entry("Long", strategy.long)
+    lStop := lStopSig
+    lTgt  := lTgtSig
+if shortSig
+    strategy.entry("Short", strategy.short)
+    sStop := sStopSig
+    sTgt  := sTgtSig
+
+if strategy.position_size > 0
+    strategy.exit("Exit L", from_entry="Long", stop=lStop, limit=lTgt)
+if strategy.position_size < 0
+    strategy.exit("Exit S", from_entry="Short", stop=sStop, limit=sTgt)

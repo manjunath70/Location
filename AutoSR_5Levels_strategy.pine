@@ -166,10 +166,10 @@ tol = nz(atr) * touchTol
 
 longSig  = false
 shortSig = false
-lStopSig = na
-lTgtSig  = na
-sStopSig = na
-sTgtSig  = na
+float lStopSig = na
+float lTgtSig  = na
+float sStopSig = na
+float sTgtSig  = na
 
 if strategy.position_size == 0
     if sigMode == "Bounce"

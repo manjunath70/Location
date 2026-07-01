@@ -149,27 +149,32 @@ if not na(pl)
         addOrTouch(resArr, pl, pivotBar, resCol)
 
 // ============================ INVALIDATION ============================
+// Iterate top-down with a while loop (Pine rejects a negative `for ... by`
+// step) so array.remove at the current index never shifts unvisited indices.
+
 // Resistance broken when price closes above it (beyond the buffer)
-if array.size(resArr) > 0
-    for i = array.size(resArr) - 1 to 0 by -1
-        s = array.get(resArr, i)
-        if close > s.price + brk
-            array.remove(resArr, i)
-            if flip
-                flipOrMerge(s, supArr, supCol)
-            else
-                deleteLevel(s)
+ri = array.size(resArr) - 1
+while ri >= 0
+    s = array.get(resArr, ri)
+    if close > s.price + brk
+        array.remove(resArr, ri)
+        if flip
+            flipOrMerge(s, supArr, supCol)
+        else
+            deleteLevel(s)
+    ri := ri - 1
 
 // Support broken when price closes below it (beyond the buffer)
-if array.size(supArr) > 0
-    for i = array.size(supArr) - 1 to 0 by -1
-        s = array.get(supArr, i)
-        if close < s.price - brk
-            array.remove(supArr, i)
-            if flip
-                flipOrMerge(s, resArr, resCol)
-            else
-                deleteLevel(s)
+si = array.size(supArr) - 1
+while si >= 0
+    s = array.get(supArr, si)
+    if close < s.price - brk
+        array.remove(supArr, si)
+        if flip
+            flipOrMerge(s, resArr, resCol)
+        else
+            deleteLevel(s)
+    si := si - 1
 
 // ============================ REFRESH (labels + emphasis) ============================
 // Only the last bar's state is displayed, so update drawing objects there.

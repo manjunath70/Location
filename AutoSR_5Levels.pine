@@ -1,0 +1,73 @@
+//@version=5
+indicator("Auto S/R (5 Levels FINAL FIX)", overlay=true)
+
+// INPUTS
+leftBars = input.int(5, title="Left Strength", minval=1)
+rightBars = input.int(5, title="Right Strength", minval=1)
+minGap = input.float(0.2, title="Min Gap", step=0.1)
+
+// PIVOTS
+ph = ta.pivothigh(high, leftBars, rightBars)
+pl = ta.pivotlow(low, leftBars, rightBars)
+
+// ARRAYS
+var float[] resArr = array.new_float()
+var float[] supArr = array.new_float()
+
+// SAFE FUNCTION (FIXED)
+isFar(level, arr) =>
+    size = array.size(arr)
+    if size == 0
+        true
+    else
+        ok = true
+        for i = 0 to size - 1
+            ok := ok and math.abs(level - array.get(arr, i)) >= minGap
+        ok
+
+// STORE RESISTANCE
+if not na(ph)
+    if isFar(ph, resArr)
+        array.unshift(resArr, ph)
+        if array.size(resArr) > 5
+            array.pop(resArr)
+
+// STORE SUPPORT
+if not na(pl)
+    if isFar(pl, supArr)
+        array.unshift(supArr, pl)
+        if array.size(supArr) > 5
+            array.pop(supArr)
+
+// GET LEVEL FUNCTION
+getLevel(arr, i) =>
+    array.size(arr) > i ? array.get(arr, i) : na
+
+// LEVELS
+res1 = getLevel(resArr, 0)
+res2 = getLevel(resArr, 1)
+res3 = getLevel(resArr, 2)
+res4 = getLevel(resArr, 3)
+res5 = getLevel(resArr, 4)
+
+sup1 = getLevel(supArr, 0)
+sup2 = getLevel(supArr, 1)
+sup3 = getLevel(supArr, 2)
+sup4 = getLevel(supArr, 3)
+sup5 = getLevel(supArr, 4)
+
+// PLOTS
+plot(res1, title="R1", color=color.red, linewidth=2)
+plot(res2, title="R2", color=color.red)
+plot(res3, title="R3", color=color.red)
+plot(res4, title="R4", color=color.red)
+plot(res5, title="R5", color=color.red)
+
+plot(sup1, title="S1", color=color.green, linewidth=2)
+plot(sup2, title="S2", color=color.green)
+plot(sup3, title="S3", color=color.green)
+plot(sup4, title="S4", color=color.green)
+plot(sup5, title="S5", color=color.green)
+
+// BACKGROUND
+// bgcolor(close <= sup1 * 1.01 ? color.new(color.green, 90) : close >= res1 * 0.99 ? color.new(color.red, 90) : na)

@@ -86,6 +86,7 @@ nearestWithin(array<SR> arr, float price, float g) =>
     idx
 
 // drop the weakest level (fewest touches, ties broken by age) to respect the cap
+// (trailing `true` keeps the if a statement so the function has one return type)
 removeWeakest(array<SR> arr) =>
     if array.size(arr) >= 2
         wi = 0
@@ -97,6 +98,7 @@ removeWeakest(array<SR> arr) =>
                 wi := i
         deleteLevel(array.get(arr, wi))
         array.remove(arr, wi)
+    true
 
 // add a fresh level, or bump the touch count if a pivot re-tests an existing one
 addOrTouch(array<SR> arr, float price, int startBar, color col) =>
@@ -108,6 +110,7 @@ addOrTouch(array<SR> arr, float price, int startBar, color col) =>
         array.push(arr, makeLevel(price, startBar, col))
         if array.size(arr) > maxLevels
             removeWeakest(arr)
+    true
 
 // move a broken level to the opposite array, merging into an existing level there
 flipOrMerge(SR s, array<SR> toArr, color col) =>
@@ -124,6 +127,7 @@ flipOrMerge(SR s, array<SR> toArr, color col) =>
         array.push(toArr, s)
         if array.size(toArr) > maxLevels
             removeWeakest(toArr)
+    true
 
 // ============================ PIVOTS -> LEVELS ============================
 ph = ta.pivothigh(high, leftBars, rightBars)
@@ -187,6 +191,7 @@ refresh(array<SR> arr, bool isRes) =>
             label.set_y(s.lbl, s.price)
             txt = (isRes ? "R " : "S ") + str.tostring(s.price, format.mintick) + (s.touches > 1 ? "  " + str.tostring(s.touches) + "x" : "")
             label.set_text(s.lbl, showLabels ? txt : "")
+    true
 
 if barstate.islast
     refresh(resArr, true)

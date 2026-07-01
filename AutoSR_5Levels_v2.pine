@@ -1,25 +1,14 @@
 //@version=5
 // Auto S/R (5 Levels) v2
 // -----------------------------------------------------------------------------
-// Rewrite of "Auto S/R (5 Levels FINAL FIX)" addressing the accuracy issues in
-// the original:
-//   1. Levels are drawn as real horizontal rays (line.new, extend=right) anchored
-//      at the true pivot bar — no more diagonal plot() connectors, and each line
-//      tracks ONE fixed price for its whole life instead of sliding as an array
-//      index.
-//   2. Broken levels are invalidated: on a decisive close through a level it is
-//      deleted, or (optionally) flipped to the opposite role (classic S/R theory).
-//   3. The "distinct level" gap is ATR- or percent-based, so behaviour is
-//      scale-invariant across instruments and timeframes (the original used an
-//      absolute price distance).
-//   4. Re-tested pivots near an existing level increment a touch count instead of
-//      being silently discarded; weakest (fewest-touch) levels are pruned first.
-//   5. The NEAREST level to price is emphasized, not the most recent one.
-// Every confirmed pivot is kept: a swing high at/above price is resistance, one
-// below price is an already-broken level (flipped to support, or skipped in
-// Delete mode) — nothing is silently dropped the way the ph>close gate would.
+// Keeps a rolling pool of distinct swing pivots. On every bar it shows the N
+// nearest levels ABOVE price as resistance and the N nearest BELOW price as
+// support (default 5 each), so you always see up to N of each side. Levels are
+// real horizontal rays; a level's role flips automatically as price crosses it
+// (broken resistance becomes support, and vice-versa). The distinct-level gap is
+// ATR/percent based, so spacing is scale-invariant across instruments.
 // Note: pivots confirm rightBars bars after the swing forms (inherent, non-
-// repainting lag). Lines are anchored back at the real pivot bar to reflect this.
+// repainting lag). Lines are anchored back at the real pivot bar.
 // -----------------------------------------------------------------------------
 indicator("Auto S/R (5 Levels) v2", overlay=true, max_lines_count=500, max_labels_count=500)
 
@@ -29,17 +18,13 @@ leftBars  = input.int(5, "Left Strength",  minval=1, group=grpP)
 rightBars = input.int(5, "Right Strength", minval=1, group=grpP)
 
 grpL = "Levels"
-maxLevels = input.int(5, "Max levels per side", minval=1, maxval=50, group=grpL)
+maxLevels = input.int(5, "Levels shown per side", minval=1, maxval=20, group=grpL)
 
 grpG = "Distinct-level gap"
-gapMode = input.string("ATR", "Gap mode", options=["ATR", "Percent"], group=grpG, tooltip="How far apart two pivots must be to count as separate levels. ATR adapts to volatility, Percent scales with price. Both are scale-invariant across instruments, unlike a fixed price gap.")
+gapMode = input.string("ATR", "Gap mode", options=["ATR", "Percent"], group=grpG, tooltip="Minimum spacing between distinct levels. ATR adapts to volatility, Percent scales with price.")
 atrLen  = input.int(14, "ATR length", minval=1, group=grpG)
 atrMult = input.float(0.5, "ATR gap multiple", minval=0.0, step=0.1, group=grpG)
 gapPct  = input.float(0.5, "Percent gap %", minval=0.0, step=0.1, group=grpG)
-
-grpB = "Invalidation"
-onBreak   = input.string("Delete", "When a level breaks", options=["Delete", "Flip role"], group=grpB, tooltip="Delete removes a broken level. Flip role turns broken resistance into support (and vice-versa).")
-breakMult = input.float(0.1, "Break buffer (ATR mult)", minval=0.0, step=0.05, group=grpB, tooltip="Price must close beyond a level by this many ATRs before it counts as broken. Reduces noise.")
 
 grpV = "Visuals"
 resCol     = input.color(color.red,   "Resistance color", group=grpV)
@@ -47,7 +32,7 @@ supCol     = input.color(color.green, "Support color",    group=grpV)
 showLabels = input.bool(true, "Show price / touch labels", group=grpV)
 emphasize  = input.bool(true, "Emphasize nearest level",   group=grpV)
 
-// ============================ TYPES / STATE ============================
+// ============================ STATE ============================
 type SR
     float price
     int   touches
@@ -55,18 +40,16 @@ type SR
     line  ln
     label lbl
 
-var array<SR> resArr = array.new<SR>()
-var array<SR> supArr = array.new<SR>()
+var array<SR> pool = array.new<SR>()
 
-atr  = ta.atr(atrLen)
-gap  = math.max(gapMode == "ATR" ? nz(atr) * atrMult : close * gapPct / 100.0, syminfo.mintick)
-brk  = nz(atr) * breakMult
-flip = onBreak == "Flip role"
+atr     = ta.atr(atrLen)
+gap     = math.max(gapMode == "ATR" ? nz(atr) * atrMult : close * gapPct / 100.0, syminfo.mintick)
+poolMax = math.max(maxLevels * 6, 30)
 
 // ============================ HELPERS ============================
-makeLevel(float price, int startBar, color col) =>
-    ln  = line.new(startBar, price, bar_index, price, extend=extend.right, color=col, width=1)
-    lbl = label.new(bar_index, price, "", style=label.style_label_left, textcolor=col, color=color.new(col, 100), size=size.small)
+makeLevel(float price, int startBar) =>
+    ln  = line.new(startBar, price, bar_index, price, extend=extend.right, color=supCol, width=1)
+    lbl = label.new(bar_index, price, "", style=label.style_label_left, size=size.small, color=color.new(color.gray, 100))
     SR.new(price, 1, startBar, ln, lbl)
 
 deleteLevel(SR s) =>
@@ -86,7 +69,6 @@ nearestWithin(array<SR> arr, float price, float g) =>
     idx
 
 // drop the weakest level (fewest touches, ties broken by age) to respect the cap
-// (trailing `true` keeps the if a statement so the function has one return type)
 removeWeakest(array<SR> arr) =>
     if array.size(arr) >= 2
         wi = 0
@@ -101,106 +83,80 @@ removeWeakest(array<SR> arr) =>
     true
 
 // add a fresh level, or bump the touch count if a pivot re-tests an existing one
-addOrTouch(array<SR> arr, float price, int startBar, color col) =>
+addOrTouch(array<SR> arr, float price, int startBar) =>
     idx = nearestWithin(arr, price, gap)
     if idx >= 0
         s = array.get(arr, idx)
         s.touches := s.touches + 1
     else
-        array.push(arr, makeLevel(price, startBar, col))
-        if array.size(arr) > maxLevels
+        array.push(arr, makeLevel(price, startBar))
+        if array.size(arr) > poolMax
             removeWeakest(arr)
     true
 
-// move a broken level to the opposite array, merging into an existing level there
-flipOrMerge(SR s, array<SR> toArr, color col) =>
-    idx = nearestWithin(toArr, s.price, gap)
-    if idx >= 0
-        existing = array.get(toArr, idx)
-        existing.touches := existing.touches + 1
-        deleteLevel(s)
-    else
-        line.set_color(s.ln, col)
-        label.set_textcolor(s.lbl, col)
-        s.touches  := 1
-        s.startBar := bar_index          // treat as newly created for age tie-breaks
-        array.push(toArr, s)
-        if array.size(toArr) > maxLevels
-            removeWeakest(toArr)
-    true
+// nearest pooled level strictly below / above a price (na if none)
+nearBelow(array<SR> arr, float price) =>
+    float best = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            p = array.get(arr, i).price
+            if p < price and (na(best) or p > best)
+                best := p
+    best
 
-// ============================ PIVOTS -> LEVELS ============================
+nearAbove(array<SR> arr, float price) =>
+    float best = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            p = array.get(arr, i).price
+            if p > price and (na(best) or p < best)
+                best := p
+    best
+
+// ============================ COLLECT PIVOTS ============================
 ph = ta.pivothigh(high, leftBars, rightBars)
 pl = ta.pivotlow(low,  leftBars, rightBars)
 pivotBar = bar_index - rightBars
 
-// Swing high: resistance if at/above price, else an already-broken level
 if not na(ph)
-    if ph >= close
-        addOrTouch(resArr, ph, pivotBar, resCol)
-    else if flip
-        addOrTouch(supArr, ph, pivotBar, supCol)
-
-// Swing low: support if at/below price, else an already-broken level
+    addOrTouch(pool, ph, pivotBar)
 if not na(pl)
-    if pl <= close
-        addOrTouch(supArr, pl, pivotBar, supCol)
-    else if flip
-        addOrTouch(resArr, pl, pivotBar, resCol)
+    addOrTouch(pool, pl, pivotBar)
 
-// ============================ INVALIDATION ============================
-// Iterate top-down with a while loop (Pine rejects a negative `for ... by`
-// step) so array.remove at the current index never shifts unvisited indices.
-
-// Resistance broken when price closes above it (beyond the buffer)
-ri = array.size(resArr) - 1
-while ri >= 0
-    s = array.get(resArr, ri)
-    if close > s.price + brk
-        array.remove(resArr, ri)
-        if flip
-            flipOrMerge(s, supArr, supCol)
-        else
-            deleteLevel(s)
-    ri := ri - 1
-
-// Support broken when price closes below it (beyond the buffer)
-si = array.size(supArr) - 1
-while si >= 0
-    s = array.get(supArr, si)
-    if close < s.price - brk
-        array.remove(supArr, si)
-        if flip
-            flipOrMerge(s, resArr, resCol)
-        else
-            deleteLevel(s)
-    si := si - 1
-
-// ============================ REFRESH (labels + emphasis) ============================
-// Only the last bar's state is displayed, so update drawing objects there.
-refresh(array<SR> arr, bool isRes) =>
+// ============================ DISPLAY (nearest N each side) ============================
+// For each pooled level, count how many same-side (above/below price) levels are
+// closer; the closest `maxLevels` per side are shown, the rest hidden.
+drawLevels(array<SR> arr) =>
     n = array.size(arr)
     if n > 0
-        ni = -1
-        nd = 1e20
-        if emphasize
-            for i = 0 to n - 1
-                d = math.abs(close - array.get(arr, i).price)
-                if d < nd
-                    nd := d
-                    ni := i
         for i = 0 to n - 1
             s = array.get(arr, i)
-            line.set_width(s.ln, emphasize and i == ni ? 2 : 1)
-            label.set_x(s.lbl, bar_index)
-            label.set_y(s.lbl, s.price)
-            txt = (isRes ? "R " : "S ") + str.tostring(s.price, format.mintick) + (s.touches > 1 ? "  " + str.tostring(s.touches) + "x" : "")
-            label.set_text(s.lbl, showLabels ? txt : "")
+            isRes = s.price > close
+            dThis = math.abs(s.price - close)
+            rank  = 0
+            for j = 0 to n - 1
+                if j != i
+                    o = array.get(arr, j)
+                    if (o.price > close) == isRes
+                        dOther = math.abs(o.price - close)
+                        if dOther < dThis or (dOther == dThis and j < i)
+                            rank := rank + 1
+            col = isRes ? resCol : supCol
+            if rank < maxLevels
+                line.set_color(s.ln, col)
+                line.set_width(s.ln, emphasize and rank == 0 ? 2 : 1)
+                label.set_x(s.lbl, bar_index)
+                label.set_y(s.lbl, s.price)
+                label.set_textcolor(s.lbl, col)
+                txt = (isRes ? "R " : "S ") + str.tostring(s.price, format.mintick) + (s.touches > 1 ? "  " + str.tostring(s.touches) + "x" : "")
+                label.set_text(s.lbl, showLabels ? txt : "")
+            else
+                line.set_color(s.ln, color.new(col, 100))
+                label.set_text(s.lbl, "")
     true
 
 if barstate.islast
-    refresh(resArr, true)
-    refresh(supArr, false)
+    drawLevels(pool)
 
 // ============================ ENTRY / EXIT SIGNALS ============================
 // Mechanical signals derived from the levels above. NOT financial advice — these
@@ -213,28 +169,11 @@ grpS = "Entry / Exit signals"
 showSig  = input.bool(true,   "Show entry/exit signals", group=grpS)
 sigMode  = input.string("Bounce", "Strategy", options=["Bounce", "Breakout"], group=grpS, tooltip="Bounce fades the level (mean reversion). Breakout trades the break of the level.")
 touchTol = input.float(0.25,  "Bounce touch tolerance (ATR mult)", minval=0.0, step=0.05, group=grpS)
+stopMult = input.float(0.10,  "Stop buffer (ATR mult)", minval=0.0, step=0.05, group=grpS)
 
-// nearest level strictly below / above the current price
-nearestBelow(array<SR> arr, float price) =>
-    float best = na
-    if array.size(arr) > 0
-        for i = 0 to array.size(arr) - 1
-            p = array.get(arr, i).price
-            if p < price and (na(best) or p > best)
-                best := p
-    best
-
-nearestAbove(array<SR> arr, float price) =>
-    float best = na
-    if array.size(arr) > 0
-        for i = 0 to array.size(arr) - 1
-            p = array.get(arr, i).price
-            if p > price and (na(best) or p < best)
-                best := p
-    best
-
-supBelow = nearestBelow(supArr, close)
-resAbove = nearestAbove(resArr, close)
+brk = nz(atr) * stopMult
+supBelow = nearBelow(pool, close)
+resAbove = nearAbove(pool, close)
 tol = nz(atr) * touchTol
 
 var bool  inLong  = false
